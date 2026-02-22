@@ -4,18 +4,35 @@ from dotenv import load_dotenv
 from agents import Runner
 from .agents import seo_blog_agent
 from .schemas import BlogInput
-import asyncio
+import os
 
 load_dotenv()
 
 app = FastAPI(title="AI SEO Blog Generator API")
+
+# Get frontend URL from Railway environment variable
+FRONTEND_URL = os.getenv("FRONTEND_URL")
+
+# Allowed origins
+origins = [
+    "http://localhost:3000",  # Local dev
+]
+
+if FRONTEND_URL:
+    origins.append(FRONTEND_URL)
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000"],
+    allow_origins=origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.get("/")
+async def root():
+    return {"status": "API is running"}
 
 
 @app.post("/generate-blog")
@@ -32,7 +49,7 @@ async def generate_blog(blog_input: BlogInput):
         result = await Runner.run(
             seo_blog_agent,
             input=formatted_input,
-            max_turns=15
+            max_turns=15,
         )
 
         return result.final_output.model_dump()
