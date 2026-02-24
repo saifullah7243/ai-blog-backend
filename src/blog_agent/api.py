@@ -1,22 +1,59 @@
-from fastapi.middleware.cors import CORSMiddleware
 from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
 from dotenv import load_dotenv
 from agents import Runner
+from sqlalchemy import select
+from slugify import slugify
+import os
+
 from .agents import seo_blog_agent
 from .schemas import BlogInput
-import asyncio
+from .db import engine, Base, AsyncSessionLocal
+from .models import Blog
 
 load_dotenv()
 
 app = FastAPI(title="AI SEO Blog Generator API")
+
+# -------------------------
+# CORS Configuration
+# -------------------------
+
+FRONTEND_URL = os.getenv("FRONTEND_URL")
+
+origins = ["http://localhost:3000"]
+
+if FRONTEND_URL:
+    origins.append(FRONTEND_URL)
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000"],
-    allow_credentials=True,
+    allow_origins=origins,
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
+# -------------------------
+# Auto Create Tables
+# -------------------------
+
+@app.on_event("startup")
+async def on_startup():
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+
+# -------------------------
+# Root Endpoint
+# -------------------------
+
+@app.get("/")
+async def root():
+    return {"status": "API is running"}
+
+# -------------------------
+# Generate & Save Blog
+# -------------------------
 
 @app.post("/generate-blog")
 async def generate_blog(blog_input: BlogInput):
@@ -32,10 +69,51 @@ async def generate_blog(blog_input: BlogInput):
         result = await Runner.run(
             seo_blog_agent,
             input=formatted_input,
-            max_turns=15
+            max_turns=15,
         )
 
-        return result.final_output.model_dump()
+        output = result.final_output
+        slug = slugify(output.title)
+
+        async with AsyncSessionLocal() as session:
+            blog = Blog(
+                slug=slug,
+                title=output.title,
+                meta_description=output.meta_description,
+                content_html=output.content_html,
+            )
+            session.add(blog)
+            await session.commit()
+
+        return output.model_dump()
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+# -------------------------
+# Get All Blogs
+# -------------------------
+
+@app.get("/blogs")
+async def get_blogs():
+    async with AsyncSessionLocal() as session:
+        result = await session.execute(select(Blog))
+        blogs = result.scalars().all()
+        return blogs
+
+# -------------------------
+# Get Blog by Slug
+# -------------------------
+
+@app.get("/blogs/{slug}")
+async def get_blog(slug: str):
+    async with AsyncSessionLocal() as session:
+        result = await session.execute(
+            select(Blog).where(Blog.slug == slug)
+        )
+        blog = result.scalar_one_or_none()
+
+        if not blog:
+            raise HTTPException(status_code=404, detail="Blog not found")
+
+        return blog
